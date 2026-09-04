@@ -1,6 +1,82 @@
 import AppKit
 import CodexUsageHUDCore
 
+enum ColorScheme: String, CaseIterable {
+    case rosewood, quiet, dusk, sage, slate
+
+    static let key = "hud.colorScheme"
+    static var current: ColorScheme {
+        ColorScheme(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .rosewood
+    }
+
+    var displayName: String {
+        switch self {
+        case .rosewood: return "灰蓝 → 暗玫瑰"
+        case .quiet: return "静默升级"
+        case .dusk: return "雾青 → 黄昏紫"
+        case .sage: return "鼠尾草 → 陶土"
+        case .slate: return "石板 → 铁锈"
+        }
+    }
+
+    /// Every value is computed, not eyeballed: each clears 4.5 contrast against
+    /// its own panel background. 4.5 is the body-text threshold rather than the
+    /// 3.0 one for graphics, because these colours carry the percentage label
+    /// as well as the bar. The hue progressions keep saturation low and
+    /// grey-leaning, read as an ordered progression rather than three unrelated
+    /// hues, and leave the quiet end nearly colourless so colour only appears
+    /// when it means something.
+    var colors: (low: NSColor, mid: NSColor, high: NSColor) {
+        func c(_ lr: CGFloat, _ lg: CGFloat, _ lb: CGFloat,
+               _ dr: CGFloat, _ dg: CGFloat, _ db: CGFloat) -> NSColor {
+            adaptiveColor(light: NSColor(calibratedRed: lr, green: lg, blue: lb, alpha: 1),
+                          dark: NSColor(calibratedRed: dr, green: dg, blue: db, alpha: 1))
+        }
+        switch self {
+        case .rosewood:
+            return (c(0.40, 0.45, 0.53, 0.49, 0.54, 0.60),
+                    c(0.52, 0.43, 0.35, 0.60, 0.52, 0.44),
+                    c(0.57, 0.40, 0.44, 0.65, 0.49, 0.53))
+        case .quiet:
+            return (c(0.44, 0.45, 0.46, 0.52, 0.53, 0.55),
+                    c(0.50, 0.44, 0.35, 0.58, 0.52, 0.44),
+                    c(0.60, 0.39, 0.37, 0.67, 0.49, 0.47))
+        case .dusk:
+            return (c(0.36, 0.46, 0.48, 0.45, 0.55, 0.56),
+                    c(0.49, 0.42, 0.53, 0.57, 0.51, 0.60),
+                    c(0.56, 0.39, 0.51, 0.64, 0.49, 0.59))
+        case .sage:
+            return (c(0.37, 0.47, 0.37, 0.46, 0.56, 0.46),
+                    c(0.50, 0.44, 0.33, 0.58, 0.53, 0.42),
+                    c(0.56, 0.41, 0.35, 0.64, 0.50, 0.44))
+        case .slate:
+            return (c(0.41, 0.45, 0.51, 0.49, 0.54, 0.59),
+                    c(0.49, 0.44, 0.36, 0.58, 0.53, 0.45),
+                    c(0.59, 0.40, 0.34, 0.66, 0.49, 0.44))
+        }
+    }
+}
+
+/// A colour that resolves differently in Light and Dark Mode. Views resolve it
+/// against their own effective appearance when drawing, so a self-drawn bar
+/// picks up the right one without checking anything itself.
+private func adaptiveColor(light: NSColor, dark: NSColor) -> NSColor {
+    NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    }
+}
+
+/// A plain translucent backing, used when the frosted material is not wanted.
+/// Drawing it by hand means the adaptive colour resolves against this view's
+/// own effective appearance, which a CGColor on a layer would not do.
+private final class TintView: NSView {
+    var fill: NSColor = .clear { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        fill.setFill()
+        bounds.fill()
+    }
+}
+
 private final class UsageBarView: NSView {
     private let trackHeight: CGFloat = 6
 
@@ -62,7 +138,11 @@ private final class HUDPanel: NSPanel {
 @MainActor
 final class HUDPanelController: NSObject, NSWindowDelegate {
     private let panel: HUDPanel
+    private let container = NSView()
     private let effectView = NSVisualEffectView()
+    private let tintView = TintView()
+    private let panelStyleKey = "hud.frostedStyle"
+    private let appearanceKey = "hud.appearance"
     private let manualOriginXKey = "hud.manualOrigin.x"
     private let manualOriginYKey = "hud.manualOrigin.y"
     private let fiveHourName = NSTextField(labelWithString: "5\u{2009}小时")
@@ -73,11 +153,14 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
     private let weeklyBar = UsageBarView()
     private let weeklyPercent = NSTextField(labelWithString: "—")
     private let weeklyStatus = NSTextField(labelWithString: "")
-    // Keep the usage signal legible without the visual weight of system blue,
-    // orange, and red on a translucent dark panel.
-    private let quietBlue = NSColor(calibratedRed: 0.46, green: 0.53, blue: 0.60, alpha: 1.0)
-    private let quietAmber = NSColor(calibratedRed: 0.64, green: 0.55, blue: 0.43, alpha: 1.0)
-    private let quietRed = NSColor(calibratedRed: 0.64, green: 0.46, blue: 0.46, alpha: 1.0)
+    // Five palettes to choose between, all measured rather than eyeballed:
+    // every colour clears 4.5 contrast against its own panel background, so
+    // none of them can end up as unreadable as the original single palette did
+    // on a light background (1.4-1.7).
+    private var scheme: ColorScheme { ColorScheme.current }
+    private var quietBlue: NSColor { scheme.colors.low }
+    private var quietAmber: NSColor { scheme.colors.mid }
+    private var quietRed: NSColor { scheme.colors.high }
 
     private var snapshot: RateLimitSnapshot?
     private var lastStatus: AppServerClientStatus = .unavailable
@@ -141,20 +224,49 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
             object: nil
         )
 
-        effectView.material = .hudWindow
-        effectView.blendingMode = .withinWindow
-        effectView.state = .active
-        effectView.wantsLayer = true
-        effectView.layer?.cornerRadius = 12
-        effectView.layer?.borderWidth = 0.5
-        effectView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
-        effectView.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView?.addSubview(effectView)
+        // The rounded corner and hairline border live on a container, not on
+        // the visual-effect view. Setting wantsLayer and layer properties
+        // directly on an NSVisualEffectView replaces the backdrop layer the
+        // system draws its material into, which is one way to end up with a
+        // flat slab where the translucency should be.
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.masksToBounds = true
+        container.layer?.borderWidth = 0.5
+        container.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView?.addSubview(container)
         NSLayoutConstraint.activate([
-            effectView.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor),
-            effectView.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor),
-            effectView.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
-            effectView.bottomAnchor.constraint(equalTo: panel.contentView!.bottomAnchor)
+            container.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor),
+            container.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
+            container.bottomAnchor.constraint(equalTo: panel.contentView!.bottomAnchor)
+        ])
+
+        tintView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(tintView)
+        NSLayoutConstraint.activate([
+            tintView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            tintView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            tintView.topAnchor.constraint(equalTo: container.topAnchor),
+            tintView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        // .hudWindow is a dark-only material: in Light Mode it renders as a
+        // flat mid-grey slab. .popover follows the system appearance.
+        effectView.material = .popover
+        // .withinWindow blends against sibling views inside this window, and
+        // this view is the bottom of the panel, so there is nothing to blend
+        // with. .behindWindow is what samples the window underneath.
+        effectView.blendingMode = .behindWindow
+        effectView.state = .active
+        effectView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(effectView)
+        NSLayoutConstraint.activate([
+            effectView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            effectView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            effectView.topAnchor.constraint(equalTo: container.topAnchor),
+            effectView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
         configureLabels()
@@ -172,13 +284,14 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
         grid.column(at: 2).xPlacement = .trailing
         grid.column(at: 3).xPlacement = .leading
         grid.translatesAutoresizingMaskIntoConstraints = false
-        effectView.addSubview(grid)
+        container.addSubview(grid)
         NSLayoutConstraint.activate([
-            grid.leadingAnchor.constraint(equalTo: effectView.leadingAnchor, constant: 14),
-            grid.trailingAnchor.constraint(equalTo: effectView.trailingAnchor, constant: -14),
-            grid.topAnchor.constraint(equalTo: effectView.topAnchor, constant: 10),
-            grid.bottomAnchor.constraint(equalTo: effectView.bottomAnchor, constant: -10)
+            grid.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            grid.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            grid.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            grid.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10)
         ])
+        applyPanelStyle()
         render()
     }
 
@@ -237,7 +350,7 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
     }
 
     private func setHovered(_ isHovered: Bool) {
-        effectView.layer?.borderColor = NSColor.separatorColor
+        container.layer?.borderColor = NSColor.separatorColor
             .withAlphaComponent(isHovered ? 0.22 : 0.12)
             .cgColor
     }
@@ -248,10 +361,36 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
         refreshItem.target = self
         let resetItem = NSMenuItem(title: "恢复默认位置", action: #selector(resetPositionFromMenu), keyEquivalent: "")
         resetItem.target = self
+        let appearanceItem = NSMenuItem(title: "明暗", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu()
+        let currentAppearance = UserDefaults.standard.string(forKey: appearanceKey) ?? "system"
+        for (raw, title) in [("system", "跟随系统"), ("light", "浅色"), ("dark", "深色")] {
+            let item = NSMenuItem(title: title, action: #selector(pickAppearance(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = raw
+            item.state = raw == currentAppearance ? .on : .off
+            appearanceMenu.addItem(item)
+        }
+        appearanceItem.submenu = appearanceMenu
         let quitItem = NSMenuItem(title: "退出", action: #selector(quitFromMenu), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(refreshItem)
         menu.addItem(resetItem)
+        menu.addItem(appearanceItem)
+
+        let schemeItem = NSMenuItem(title: "配色", action: nil, keyEquivalent: "")
+        let schemeMenu = NSMenu()
+        for option in ColorScheme.allCases {
+            let item = NSMenuItem(title: option.displayName,
+                                  action: #selector(pickColorScheme(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = option.rawValue
+            item.state = option == ColorScheme.current ? .on : .off
+            schemeMenu.addItem(item)
+        }
+        schemeItem.submenu = schemeMenu
+        menu.addItem(schemeItem)
         menu.addItem(.separator())
         menu.addItem(quitItem)
         menu.popUp(positioning: nil, at: event.locationInWindow, in: panel.contentView)
@@ -270,6 +409,54 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
 
     @objc private func quitFromMenu() {
         NSApp.terminate(nil)
+    }
+
+    // Default is the plain translucent backing. Three attempts showed the
+    // .behindWindow material never samples anything on a borderless
+    // nonactivating panel: the interior stayed a perfectly uniform colour in
+    // every Light Mode screenshot. Window-server alpha compositing does work.
+    private var usesFrostedStyle: Bool {
+        UserDefaults.standard.object(forKey: panelStyleKey) as? Bool ?? false
+    }
+
+    @objc private func pickColorScheme(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(raw, forKey: ColorScheme.key)
+        render()
+    }
+
+    private func applyPanelStyle() {
+        let frosted = usesFrostedStyle
+        effectView.isHidden = !frosted
+        tintView.isHidden = frosted
+        tintView.fill = adaptiveColor(
+            light: NSColor(calibratedWhite: 0.97, alpha: 0.78),
+            dark: NSColor(calibratedWhite: 0.13, alpha: 0.76))
+        applyAppearance()
+    }
+
+    /// The panel follows the macOS system appearance by default, but Codex has
+    /// its own light/dark theme setting that does not have to agree with it. A
+    /// dark system with a light Codex leaves a dark slab sitting on a light
+    /// window, so the appearance is overridable here.
+    private func applyAppearance() {
+        switch UserDefaults.standard.string(forKey: appearanceKey) {
+        case "light": panel.appearance = NSAppearance(named: .aqua)
+        case "dark": panel.appearance = NSAppearance(named: .darkAqua)
+        default: panel.appearance = nil
+        }
+        tintView.needsDisplay = true
+        render()
+    }
+
+    @objc private func pickAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        if raw == "system" {
+            UserDefaults.standard.removeObject(forKey: appearanceKey)
+        } else {
+            UserDefaults.standard.set(raw, forKey: appearanceKey)
+        }
+        applyAppearance()
     }
 
     private func configureLabels() {

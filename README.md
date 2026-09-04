@@ -40,8 +40,15 @@ bash scripts/package_app.sh
 That builds it, runs the tests, signs it, and installs it to `~/Applications`.
 Open it once and it will register itself to start at login.
 
-Right-click the panel to refresh, reset its position, or quit. There is no
-menu-bar icon, so that panel is the only place to control it.
+Right-click the panel for: refresh now, reset position, light/dark, colour
+palette, and quit. There is no menu-bar icon, so that panel is the only place
+to control it.
+
+Two of those need a word. **Light/dark** is separate from the system setting on
+purpose: Codex has its own theme, and a dark system with a light Codex would
+otherwise leave a dark slab sitting on a light window. **Colour palette** offers
+five options; every colour in each one is computed to clear 4.5 contrast
+against its own background rather than picked by eye.
 
 To remove it: quit from that menu, delete the app, and delete
 `~/Library/LaunchAgents/com.local.codex-usage-hud.plist`.

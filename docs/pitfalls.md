@@ -120,6 +120,48 @@ windows can sort ahead of the main one.
 **Fix.** Filter by PID, layer 0, alpha above zero and a minimum size, then take
 the largest by area.
 
+## Frosted glass does not work on a borderless panel
+
+**Symptom.** `NSVisualEffectView` renders as a flat slab of colour. Nothing
+behind the window shows through, in either appearance.
+
+**Cause.** Two separate things, and fixing only one leaves it looking fixed
+while it is not. `blendingMode = .withinWindow` blends against sibling views
+inside the same window, and a backing view at the bottom of a panel has no
+siblings to blend with. Setting `wantsLayer` plus layer properties directly on
+the effect view replaces the backdrop layer the system draws the material into.
+
+**Fix.** Neither, in the end. `.behindWindow` plus a container view for the
+corner radius still produced a flat slab on a `[.borderless,
+.nonactivatingPanel]` window across three attempts. What does work is a plain
+translucent background colour: window-server alpha compositing does not depend
+on the material system at all. You lose the blur and keep the translucency.
+
+**How to check.** Sample the panel interior at several points in a screenshot.
+A perfectly uniform value means nothing is showing through, no matter how
+translucent it looks. Three rounds of this read rgb(173,172,170), then
+rgb(146,144,140), then rgb(111,111,110) — the colour changed each time, so the
+code was taking effect, and the interior was uniform every time, so the
+translucency never was.
+
+## The system appearance is not the app's theme
+
+**Symptom.** A panel that follows the system appearance looks wrong against the
+app it floats over. Light-mode styling appears never to be applied.
+
+**Cause.** macOS has a system appearance, and an app can have its own theme
+setting that disagrees with it. A dark system running an app themed light gives
+you a dark panel on a light window, and every light-mode code path stays
+untouched.
+
+**Fix.** Give a cross-application overlay its own light/dark/follow-system
+setting instead of binding it to `NSApp.effectiveAppearance`. Detecting the
+underlying window's brightness automatically would need Screen Recording
+permission, which is rarely worth it.
+
+**How to check.** `defaults read -g AppleInterfaceStyle` reports the system
+appearance. Read it before concluding that a light-mode branch is broken.
+
 ## Ad-hoc signing plus a synced folder
 
 **Symptom.** `codesign --verify --deep --strict` fails with a resource-fork or
