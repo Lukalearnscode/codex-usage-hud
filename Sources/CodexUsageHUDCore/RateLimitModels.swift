@@ -13,15 +13,28 @@ public struct RateLimitWindow: Equatable, Sendable {
 }
 
 public struct RateLimitSnapshot: Equatable, Sendable {
-    public let fiveHour: RateLimitWindow?
-    public let weekly: RateLimitWindow?
+    /// Every window the server reported, shortest first. Paid plans send a
+    /// five-hour and a weekly window; the free plan sends a single 30-day one
+    /// (seen 2026-09-11 after the subscription lapsed). Keying rows by fixed
+    /// durations dropped that window on the floor, and the HUD kept showing
+    /// the last paid-plan numbers as "数据滞后" for six days.
+    public let windows: [RateLimitWindow]
+    /// `planType` from the rate-limit bucket: "free", "plus", "pro", ...
+    public let planType: String?
     public let fetchedAt: Date
 
-    public init(fiveHour: RateLimitWindow?, weekly: RateLimitWindow?, fetchedAt: Date) {
-        self.fiveHour = fiveHour
-        self.weekly = weekly
+    public init(windows: [RateLimitWindow], planType: String? = nil, fetchedAt: Date) {
+        self.windows = windows.sorted { $0.windowDurationMinutes < $1.windowDurationMinutes }
+        self.planType = planType
         self.fetchedAt = fetchedAt
     }
+
+    public func window(minutes: Int) -> RateLimitWindow? {
+        windows.first { $0.windowDurationMinutes == minutes }
+    }
+
+    public var fiveHour: RateLimitWindow? { window(minutes: 300) }
+    public var weekly: RateLimitWindow? { window(minutes: 10080) }
 }
 
 public enum RateLimitParseOutcome: Equatable {
@@ -68,10 +81,10 @@ public enum RateLimitParser {
             )
         }
 
-        guard windows[300] != nil || windows[10080] != nil else { return .invalid }
+        guard !windows.isEmpty else { return .invalid }
         return .snapshot(RateLimitSnapshot(
-            fiveHour: windows[300],
-            weekly: windows[10080],
+            windows: Array(windows.values),
+            planType: bucket["planType"] as? String,
             fetchedAt: fetchedAt
         ))
     }
@@ -119,6 +132,38 @@ public enum UsagePresentation {
         let filled = Int((RateLimitParser.clamp(usedPercent) / 100.0 * 8.0).rounded())
         let count = Swift.min(Swift.max(filled, 0), 8)
         return String(repeating: "█", count: count) + String(repeating: "░", count: 8 - count)
+    }
+
+    /// Row label for a window, by its length. The two paid-plan windows keep
+    /// the wording the panel has always used; any other window is named by
+    /// its duration so it still reads as one. The name column is 40pt, so
+    /// keep these within about three CJK characters.
+    public static func windowName(minutes: Int) -> String {
+        switch minutes {
+        case 300: return "5\(narrowSpace)小时"
+        case 10080: return "本周"
+        default:
+            if minutes % (24 * 60) == 0 { return "\(minutes / (24 * 60))\(narrowSpace)天" }
+            if minutes % 60 == 0 { return "\(minutes / 60)\(narrowSpace)小时" }
+            return "\(minutes)\(narrowSpace)分"
+        }
+    }
+
+    /// Wording for the plan row the panel shows when the server reports only
+    /// one window. Short enough that it can never clip in the 90pt status
+    /// column (seven CJK characters at 12pt).
+    public static func planLabel(for planType: String?) -> String {
+        guard let planType, !planType.isEmpty else { return "" }
+        switch planType.lowercased() {
+        case "free": return "免费档"
+        case "plus": return "Plus"
+        case "pro": return "Pro"
+        case "team": return "Team"
+        case "business": return "Business"
+        case "enterprise": return "Enterprise"
+        case "edu": return "Edu"
+        default: return planType
+        }
     }
 
     /// A countdown split into its parts.

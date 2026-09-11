@@ -74,8 +74,14 @@ Five rules:
 Older builds only have the flat one.
 
 **Tell the windows apart by `windowDurationMins`, not by the key name.** `300`
-is the 5-hour window. `10080` is the week. Do not assume `primary` is the short
-one — those names describe position, the durations describe meaning.
+is the 5-hour window. `10080` is the week. `43200` (30 days) is the free plan's
+only window. Do not assume `primary` is the short one — those names describe
+position, the durations describe meaning — and do not assume there are two.
+
+**Keep every window you get, in duration order.** A lapsed subscription turns
+the reply into one `primary` window with `secondary: null` and
+`"planType": "free"`. A parser that only knows two fixed durations treats that
+as garbage and shows stale numbers forever. Seen 2026-09-11.
 
 **Clamp `usedPercent` to 0–100.** It can come back above 100, and it can be a
 non-finite number.

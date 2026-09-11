@@ -24,6 +24,10 @@ python3 examples/read_rate_limits.py
  weekly  ████░░░░   47.0%  resets in 6d11h
 ```
 
+On the free plan there is a single 30-day window instead, and the panel's
+second row shows the plan name. Resubscribe and both rows come back on the
+next read.
+
 It is about forty lines. If you are here to build your own thing, start by
 reading [that file](examples/read_rate_limits.py) — it is the whole trick.
 

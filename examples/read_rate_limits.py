@@ -22,7 +22,7 @@ TIMEOUT = 15.0
 
 # Window lengths, in minutes, as reported by windowDurationMins. Do not rely on
 # the "primary"/"secondary" key names to tell you which window is which.
-WINDOWS = {300: "5-hour", 10080: "weekly"}
+WINDOWS = {300: "5-hour", 10080: "weekly", 43200: "30-day"}  # 43200 is the free plan
 
 
 def read_rate_limits(executable=CODEX, timeout=TIMEOUT):

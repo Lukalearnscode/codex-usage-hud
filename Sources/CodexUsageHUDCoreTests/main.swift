@@ -8,6 +8,7 @@ enum RateLimitCoreTests {
     static func main() {
         testParsesPreferredCodexBucketAndBothWindows()
         testFallsBackToLegacyBucket()
+        testParsesFreePlanSingleWindow()
         testClampsPercentAndRecognizesUnauthenticated()
         testRendersEightSegmentProgress()
         testRendersCountdownBoundaries()
@@ -15,7 +16,7 @@ enum RateLimitCoreTests {
         testRejectsUnreachableSavedPositions()
         testEmptyStateWordingDoesNotAssertSignedOut()
         testCountdownRowsEndTogetherWithNoInnerGaps()
-        print("CodexUsageHUDCoreTests: 9 passed")
+        print("CodexUsageHUDCoreTests: 10 passed")
     }
 
     private static let fetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
@@ -45,6 +46,37 @@ enum RateLimitCoreTests {
         guard case let .snapshot(snapshot) = RateLimitParser.parse(json, fetchedAt: fetchedAt) else { fatalError("legacy bucket did not parse") }
         check(snapshot.fiveHour?.usedPercent == 12, "legacy five-hour bucket")
         check(snapshot.weekly?.usedPercent == 34, "legacy weekly bucket")
+    }
+
+    private static func testParsesFreePlanSingleWindow() {
+        // Verbatim (account id redacted) from account/rateLimits/read on
+        // 2026-09-11, after the paid subscription lapsed: one 30-day window,
+        // secondary null, planType "free". The old parser returned .invalid
+        // for this and the HUD kept showing six-day-old numbers.
+        let json = """
+        {"id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":33,"windowDurationMins":43200,"resetsAt":1791690762},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"free","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":33,"windowDurationMins":43200,"resetsAt":1791690762},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"free","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":0,"credits":[]},"accountId":"redacted","rateLimitUpsell":null}}
+        """.data(using: .utf8)!
+        guard case let .snapshot(snapshot) = RateLimitParser.parse(json, fetchedAt: fetchedAt) else { fatalError("free plan did not parse") }
+        check(snapshot.windows.count == 1, "free plan has one window")
+        check(snapshot.windows.first?.windowDurationMinutes == 43200, "free plan window is 30 days")
+        check(snapshot.windows.first?.usedPercent == 33, "free plan usage")
+        check(snapshot.planType == "free", "free plan type")
+        check(snapshot.fiveHour == nil && snapshot.weekly == nil, "no paid windows on the free plan")
+        check(UsagePresentation.windowName(minutes: 43200) == "30\u{2009}天", "30-day window name")
+        check(UsagePresentation.windowName(minutes: 300) == "5\u{2009}小时", "five-hour window name unchanged")
+        check(UsagePresentation.windowName(minutes: 10080) == "本周", "weekly window name unchanged")
+        check(UsagePresentation.planLabel(for: "free") == "免费档", "free plan label")
+        check(UsagePresentation.planLabel(for: nil) == "", "missing plan label")
+
+        // Rows go shortest first whichever slot the server put them in.
+        let reversed = """
+        {"result":{"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":1700563380},"secondary":{"usedPercent":9,"windowDurationMins":300,"resetsAt":1700008280}}}}
+        """.data(using: .utf8)!
+        guard case let .snapshot(sorted) = RateLimitParser.parse(reversed, fetchedAt: fetchedAt) else { fatalError("reversed sample did not parse") }
+        check(sorted.windows.map(\.windowDurationMinutes) == [300, 10080], "windows sorted shortest first")
+
+        let noWindows = #"{"result":{"rateLimits":{"planType":"free","primary":null,"secondary":null}}}"#.data(using: .utf8)!
+        check(RateLimitParser.parse(noWindows, fetchedAt: fetchedAt) == .invalid, "a bucket with no windows is invalid")
     }
 
     private static func testClampsPercentAndRecognizesUnauthenticated() {

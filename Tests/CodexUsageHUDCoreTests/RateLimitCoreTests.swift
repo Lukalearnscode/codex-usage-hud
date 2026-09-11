@@ -34,6 +34,42 @@ final class RateLimitCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.weekly?.usedPercent, 34)
     }
 
+    func testParsesFreePlanSingleWindow() throws {
+        // Verbatim (account id redacted) from account/rateLimits/read on
+        // 2026-09-11, after the paid subscription lapsed: one 30-day window,
+        // secondary null, planType "free". The old parser returned .invalid
+        // for this and the HUD kept showing six-day-old numbers.
+        let json = """
+        {"id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":33,"windowDurationMins":43200,"resetsAt":1791690762},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"free","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":33,"windowDurationMins":43200,"resetsAt":1791690762},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"free","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":0,"credits":[]},"accountId":"redacted","rateLimitUpsell":null}}
+        """.data(using: .utf8)!
+
+        guard case let .snapshot(snapshot) = RateLimitParser.parse(json, fetchedAt: fetchedAt) else {
+            return XCTFail("free plan did not parse")
+        }
+        XCTAssertEqual(snapshot.windows.count, 1)
+        XCTAssertEqual(snapshot.windows.first?.windowDurationMinutes, 43200)
+        XCTAssertEqual(snapshot.windows.first?.usedPercent, 33)
+        XCTAssertEqual(snapshot.planType, "free")
+        XCTAssertNil(snapshot.fiveHour)
+        XCTAssertNil(snapshot.weekly)
+        XCTAssertEqual(UsagePresentation.windowName(minutes: 43200), "30\u{2009}天")
+        XCTAssertEqual(UsagePresentation.windowName(minutes: 300), "5\u{2009}小时")
+        XCTAssertEqual(UsagePresentation.windowName(minutes: 10080), "本周")
+        XCTAssertEqual(UsagePresentation.planLabel(for: "free"), "免费档")
+        XCTAssertEqual(UsagePresentation.planLabel(for: nil), "")
+
+        let reversed = """
+        {"result":{"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080,"resetsAt":1700563380},"secondary":{"usedPercent":9,"windowDurationMins":300,"resetsAt":1700008280}}}}
+        """.data(using: .utf8)!
+        guard case let .snapshot(sorted) = RateLimitParser.parse(reversed, fetchedAt: fetchedAt) else {
+            return XCTFail("reversed sample did not parse")
+        }
+        XCTAssertEqual(sorted.windows.map(\.windowDurationMinutes), [300, 10080])
+
+        let noWindows = #"{"result":{"rateLimits":{"planType":"free","primary":null,"secondary":null}}}"#.data(using: .utf8)!
+        XCTAssertEqual(RateLimitParser.parse(noWindows, fetchedAt: fetchedAt), .invalid)
+    }
+
     func testClampsInvalidPercentAndRecognizesUnauthenticated() {
         let high = """
         {"result":{"rateLimits":{"primary":{"usedPercent":140,"windowDurationMins":300,"resetsAt":1700000600}}}}
@@ -171,6 +207,6 @@ import CodexUsageHUDCore
 // CodexUsageHUDCoreTests runs the behavioral assertions on that toolchain; this
 // fallback keeps `swift test` as a useful SwiftPM compile check there.
 enum RateLimitCoreTestsToolchainFallback {
-    static let coreTypesCompile = RateLimitSnapshot(fiveHour: nil, weekly: nil, fetchedAt: Date.distantPast)
+    static let coreTypesCompile = RateLimitSnapshot(windows: [], fetchedAt: Date.distantPast)
 }
 #endif

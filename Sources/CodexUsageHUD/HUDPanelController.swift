@@ -83,6 +83,11 @@ private final class UsageBarView: NSView {
     private var usedPercent = 0.0
     private var fillColor = NSColor.secondaryLabelColor
     private var stale = false
+    // Drawing nothing, rather than hiding the view, keeps the grid's column
+    // geometry: NSGridView treats a hidden content view as an empty cell and
+    // the status label to its right ends up flush with the panel edge (seen in
+    // a 2x dump on 2026-09-11).
+    private var isBlank = false
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: 72, height: 8)
@@ -92,10 +97,17 @@ private final class UsageBarView: NSView {
         self.usedPercent = RateLimitParser.clamp(usedPercent)
         self.fillColor = color
         self.stale = stale
+        self.isBlank = false
+        needsDisplay = true
+    }
+
+    func clear() {
+        isBlank = true
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard !isBlank else { return }
         let height = min(trackHeight, bounds.height)
         let y = (bounds.height - height) / 2
 
@@ -509,31 +521,75 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
             return
         }
         let stale = Date().timeIntervalSince(snapshot.fetchedAt) > 180
+        let rows = [
+            (name: fiveHourName, bar: fiveHourBar, percent: fiveHourPercent, status: fiveHourStatus),
+            (name: weeklyName, bar: weeklyBar, percent: weeklyPercent, status: weeklyStatus)
+        ]
+        // Shortest window on top. Paid plans fill both rows; the free plan
+        // reports one 30-day window, so its second row names the plan instead.
+        let windows = Array(snapshot.windows.prefix(rows.count))
         // Both rows share one run width so their 后重置 land on the same x.
         // Measuring the pair here, rather than assuming a worst case, keeps the
         // gap no wider than the two countdowns actually on screen require.
         let now = Date()
         let font = hudFont(ofSize: 12)
-        let runWidth = [snapshot.fiveHour, snapshot.weekly]
+        let runWidth = windows
             .compactMap { window -> CGFloat? in
-                guard let window, !stale, window.resetsAt > now else { return nil }
+                guard !stale, window.resetsAt > now else { return nil }
                 return CountdownTypesetter.compactRunWidth(
                     for: UsagePresentation.countdownLayout(until: window.resetsAt, now: now),
                     font: font
                 )
             }
             .max() ?? 0
-        render(window: snapshot.fiveHour, name: fiveHourName, bar: fiveHourBar, percent: fiveHourPercent, status: fiveHourStatus, stale: stale, key: 300, runWidth: runWidth)
-        render(window: snapshot.weekly, name: weeklyName, bar: weeklyBar, percent: weeklyPercent, status: weeklyStatus, stale: stale, key: 10080, runWidth: runWidth)
+        for (index, row) in rows.enumerated() {
+            if index < windows.count {
+                render(window: windows[index], name: row.name, bar: row.bar, percent: row.percent, status: row.status, stale: stale, runWidth: runWidth)
+            } else {
+                renderPlanRow(planType: snapshot.planType, name: row.name, bar: row.bar, percent: row.percent, status: row.status)
+            }
+        }
+        dumpPanelIfRequested()
+    }
+
+    // Test-only: CODEX_HUD_DUMP_PNG=/path writes the panel at 2x after every
+    // render. Drawing our own view into a bitmap needs no screen-recording
+    // permission, which is the only way a terminal session gets to see the
+    // layout at all. Production never sets the variable.
+    private lazy var dumpPath: String? = ProcessInfo.processInfo.environment["CODEX_HUD_DUMP_PNG"]
+
+    private func dumpPanelIfRequested() {
+        guard let dumpPath, let view = panel.contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        let bounds = view.bounds
+        guard bounds.width > 0, bounds.height > 0,
+              let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(bounds.width * 2),
+                pixelsHigh: Int(bounds.height * 2),
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+              )
+        else { return }
+        rep.size = bounds.size
+        view.cacheDisplay(in: bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: dumpPath))
     }
 
     private func renderEmpty() {
         let (headline, detail) = UsagePresentation.emptyStateLines(for: lastStatus)
         let lines = [
-            (fiveHourBar, fiveHourPercent, fiveHourStatus, headline),
-            (weeklyBar, weeklyPercent, weeklyStatus, detail)
+            (fiveHourName, fiveHourBar, fiveHourPercent, fiveHourStatus, headline, 300),
+            (weeklyName, weeklyBar, weeklyPercent, weeklyStatus, detail, 10080)
         ]
-        for (bar, percent, status, text) in lines {
+        for (name, bar, percent, status, text, minutes) in lines {
+            name.stringValue = UsagePresentation.windowName(minutes: minutes)
             bar.update(usedPercent: 0, color: .secondaryLabelColor, stale: true)
             percent.stringValue = "—"
             status.stringValue = text
@@ -542,15 +598,9 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func render(window: RateLimitWindow?, name: NSTextField, bar: UsageBarView, percent: NSTextField, status: NSTextField, stale: Bool, key: Int, runWidth: CGFloat) {
-        guard let window else {
-            bar.update(usedPercent: 0, color: .secondaryLabelColor, stale: true)
-            percent.stringValue = "—"
-            status.stringValue = "—"
-            percent.textColor = .secondaryLabelColor
-            status.textColor = .secondaryLabelColor
-            return
-        }
+    private func render(window: RateLimitWindow, name: NSTextField, bar: UsageBarView, percent: NSTextField, status: NSTextField, stale: Bool, runWidth: CGFloat) {
+        let key = window.windowDurationMinutes
+        name.stringValue = UsagePresentation.windowName(minutes: key)
         let color: NSColor = stale ? .secondaryLabelColor : usageColor(for: window.usedPercent)
         bar.update(usedPercent: window.usedPercent, color: color, stale: stale)
         percent.stringValue = "\(Int(window.usedPercent.rounded()))%"
@@ -572,6 +622,26 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
                 runWidth: runWidth
             )
         }
+    }
+
+    /// The second row when only one window came back. A bar here would read
+    /// as a 0% window, so it draws nothing and the percentage is an empty
+    /// string. Both views stay unhidden so the grid keeps its column widths.
+    private func renderPlanRow(planType: String?, name: NSTextField, bar: UsageBarView, percent: NSTextField, status: NSTextField) {
+        let label = UsagePresentation.planLabel(for: planType)
+        name.stringValue = label.isEmpty ? "" : "计划"
+        bar.clear()
+        percent.stringValue = ""
+        status.textColor = .secondaryLabelColor
+        // The countdown above is an attributed string, and NSTextField draws
+        // an attributed string with no paragraph style from the leading edge,
+        // ignoring the label's own .right alignment. A plain stringValue here
+        // would honour that alignment and land 17pt further right than the
+        // countdown (measured in a 2x dump, 2026-09-11), so go the same way.
+        status.attributedStringValue = NSAttributedString(
+            string: label,
+            attributes: [.font: hudFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]
+        )
     }
 
 

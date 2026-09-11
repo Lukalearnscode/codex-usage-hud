@@ -181,3 +181,41 @@ keep the installed app out of a synced folder.
 **Cause.** Editor or tool backups sitting in a SwiftPM target directory.
 
 **Fix.** Move them out of the target and add them to `.gitignore`.
+
+## The free plan has one window, and the parser said nothing
+
+**Symptom.** The subscription lapses and the panel greys out to "数据滞后"
+(stale) for days, still showing the last paid-plan numbers. The log is empty.
+
+**Cause.** On the free plan `account/rateLimits/read` returns a single
+`primary` window of 43200 minutes (30 days), `secondary` is `null`, and
+`planType` is `"free"`. The parser only accepted the 300 and 10080 minute
+windows, so every reply was `.invalid`, no new snapshot was stored, and the
+`.invalid` branch did not log. Six days passed before anyone noticed.
+
+**Fix.** Keep every window the server sends, sorted shortest first, and name
+rows by duration instead of hard-coding two slots. Log the "parsed but no
+usable window" case. Add a test with the verbatim free-plan reply so the shape
+is pinned.
+
+**How to check.** `python3 examples/read_rate_limits.py` prints whatever
+windows exist; on the free plan that is one `30-day` line.
+
+## An attributed string ignores the label's alignment
+
+**Symptom.** Two rows in the same 90pt status column: the countdown starts at
+the column's left edge, a plain label set with `stringValue` lands flush right,
+about 17pt further over.
+
+**Cause.** The label has `alignment = .right`. The countdown is set with
+`attributedStringValue` and carries no paragraph style, so NSTextField draws it
+from the leading edge and the `.right` setting never applies to it. The plain
+string does honour it. Same column, two rules.
+
+**Fix.** Set every text that must line up with the countdown as an attributed
+string too, with the same font and colour attributes. Or give both a paragraph
+style; either way, pick one path for the whole column.
+
+**How to check.** Render the panel to a bitmap with
+`view.cacheDisplay(in:to:)` at 2x and measure. It needs no screen-recording
+permission, and the HUD does it when `CODEX_HUD_DUMP_PNG=/path` is set.

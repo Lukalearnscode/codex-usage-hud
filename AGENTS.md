@@ -9,7 +9,7 @@ Read these before changing anything:
   Reusable on its own.
 - [docs/building-the-hud.md](docs/building-the-hud.md) — the panel, window
   tracking, coordinates, typography.
-- [docs/pitfalls.md](docs/pitfalls.md) — nine failures with reproductions.
+- [docs/pitfalls.md](docs/pitfalls.md) — fourteen failures with reproductions.
 
 ## Rules that are not negotiable
 

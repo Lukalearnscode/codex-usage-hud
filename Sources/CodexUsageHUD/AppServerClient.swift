@@ -247,6 +247,10 @@ final class AppServerClient: @unchecked Sendable {
         case .notAuthenticated:
             notify(.notAuthenticated)
         case .invalid:
+            // The branch that hid a lapsed subscription for six days
+            // (2026-09-11): a well-formed reply with no window the parser
+            // recognised, and nothing in the log to say so.
+            logger.error("Rate-limit reply parsed but carried no usable window")
             notify(.unavailable)
         }
         requestPendingRefreshIfNeeded()
