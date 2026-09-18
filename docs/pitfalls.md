@@ -38,12 +38,16 @@ This project can point at one, with `CODEX_HUD_APP_SERVER_PATH` and
 is stale, nothing in the log. The difference is that the timeout you added for
 the previous pitfall never fires, because every request *is* answered.
 
-**Cause.** The child process was alive and its pipe was open, but it had no
-network connection of its own — `lsof` on it showed zero TCP sockets — and it
-answered every read with an error in milliseconds. So: no unanswered request,
-therefore no timeout, therefore no reconnect. And the branch that handles an
-error reply returned without logging anything, so there was no record either.
-This ran for eight hours and forty minutes before anyone looked.
+**Cause.** The child process was alive, its pipe was open, and it answered
+every read promptly — with an error. So: no unanswered request, therefore no
+timeout, therefore no reconnect. And the branch that handles an error reply
+returned without logging anything, so there was no record either. This ran for
+eight hours and forty minutes before anyone looked.
+
+The error reply is an inference, not an observation, precisely because that
+branch logged nothing: no timeout in the log rules out an unanswered request,
+no parse-failure line rules out a reply with no usable window, and an error
+reply is what is left. Fixing the logging is what makes the next one readable.
 
 **Fix.** Three things, and all three are needed:
 
@@ -61,11 +65,21 @@ This ran for eight hours and forty minutes before anyone looked.
 `{"error": ...}` for every rate-limit read. With `CODEX_HUD_STALE_REBUILD=20`
 the rebuild shows up within a minute.
 
-**Worth knowing.** While diagnosing this, rising CPU time on the child process
-looked like proof it was working — a steady 1 second per hour, about what a
-poll every minute costs. It was an internal heartbeat; the network had been
-gone for hours. `lsof -nP -p <pid> | grep TCP` answers the question that CPU
-time only seems to.
+**Worth knowing.** Two instruments lied during this diagnosis, on the same day.
+
+First, rising CPU time on the child looked like proof it was working — a steady
+1 second per hour, about what one poll a minute costs. It is an internal
+heartbeat and says nothing about whether work is happening.
+
+Then `lsof -nP -p <pid> | grep TCP` came back with zero sockets, which looked
+like proof the opposite way. Ten samples over thirty seconds later: a healthy
+child shows zero almost all the time too. It opens a connection per poll and
+closes it, so only the sampling that lands inside a poll sees anything. One
+`lsof` reading proves nothing in either direction.
+
+The judgement that held up is the one the fix uses: has a usable snapshot
+arrived recently. If you do want to watch connections, sample across at least
+two poll intervals before concluding anything.
 
 ## The app runs but nothing happens
 
