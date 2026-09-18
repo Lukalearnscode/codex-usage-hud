@@ -160,6 +160,31 @@ final class RateLimitCoreTests: XCTestCase {
         XCTAssertEqual(UsagePresentation.emptyStateLines(for: .available).headline, "等待数据…")
     }
 
+    func testStaleWordingNamesTheReasonAndFitsTheColumn() {
+        // 数据滞后 states that the numbers are old, which is true of a slow
+        // answer and misleading for a connection that stopped answering. On
+        // 2026-09-18 an app-server held its pipe open for eight hours with no
+        // network connection at all and the panel said only this.
+        let texts = [UsagePresentation.staleStatusText(for: .available),
+                     UsagePresentation.staleStatusText(for: .connecting),
+                     UsagePresentation.staleStatusText(for: .notAuthenticated),
+                     UsagePresentation.staleStatusText(for: .unavailable)]
+        XCTAssertEqual(Set(texts).count, 4, "each status needs its own wording")
+        XCTAssertEqual(UsagePresentation.staleStatusText(for: .available), "数据滞后")
+
+        // Same rule testEmptyStateWordingDoesNotAssertSignedOut enforces.
+        let signedOut = UsagePresentation.staleStatusText(for: .notAuthenticated)
+        XCTAssertFalse(signedOut.contains("失效"))
+        XCTAssertFalse(signedOut.contains("过期"))
+
+        // The status column is 90pt and clips; measure rather than count.
+        let font = NSFont(name: "Songti SC", size: 12) ?? NSFont.systemFont(ofSize: 12)
+        for text in texts + [UsagePresentation.refreshingText] {
+            let width = (text as NSString).size(withAttributes: [.font: font]).width
+            XCTAssertLessThanOrEqual(width, 90, "\(text) measures \(width)pt")
+        }
+    }
+
     func testCountdownRowsEndTogetherWithNoInnerGaps() {
         let font = NSFont(name: "Songti SC", size: 12) ?? NSFont.systemFont(ofSize: 12)
         func layout(_ pairs: [(String, String)]) -> UsagePresentation.CountdownLayout {

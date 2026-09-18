@@ -182,7 +182,14 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
     private var lastAppliedTrackedOrigin: CGPoint?
     private var lastCodexFrame: CGRect?
 
-    var onNeedsRefresh: (() -> Void)?
+    /// `force` marks a refresh the user asked for, which jumps the queue.
+    var onNeedsRefresh: ((_ force: Bool) -> Void)?
+    private var refreshRequestedAt: Date?
+    /// How long the status column says 刷新中… before falling back to what it
+    /// would otherwise show. A round trip measured 2.2 to 5.3 seconds on
+    /// 2026-09-18, so this covers a slow one without leaving the panel stuck
+    /// on the word if the answer never comes.
+    private let refreshFeedbackWindow: TimeInterval = 8
 
     override init() {
         panel = HUDPanel(
@@ -310,7 +317,14 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
     func setSnapshot(_ snapshot: RateLimitSnapshot) {
         self.snapshot = snapshot
         lastStatus = .available
+        refreshRequestedAt = nil
         render()
+    }
+
+    /// True while a refresh the user asked for is still out.
+    private var isAwaitingRequestedRefresh: Bool {
+        guard let refreshRequestedAt else { return false }
+        return Date().timeIntervalSince(refreshRequestedAt) < refreshFeedbackWindow
     }
 
     func setStatus(_ status: AppServerClientStatus) {
@@ -409,7 +423,11 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
     }
 
     @objc private func refreshFromMenu() {
-        onNeedsRefresh?()
+        // Render before asking, so the panel changes on the click rather than
+        // when the answer arrives seconds later.
+        refreshRequestedAt = Date()
+        render()
+        onNeedsRefresh?(true)
     }
 
     @objc private func resetPositionFromMenu() {
@@ -521,6 +539,7 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
             return
         }
         let stale = Date().timeIntervalSince(snapshot.fetchedAt) > 180
+        let refreshing = isAwaitingRequestedRefresh
         let rows = [
             (name: fiveHourName, bar: fiveHourBar, percent: fiveHourPercent, status: fiveHourStatus),
             (name: weeklyName, bar: weeklyBar, percent: weeklyPercent, status: weeklyStatus)
@@ -535,7 +554,7 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
         let font = hudFont(ofSize: 12)
         let runWidth = windows
             .compactMap { window -> CGFloat? in
-                guard !stale, window.resetsAt > now else { return nil }
+                guard !stale, !refreshing, window.resetsAt > now else { return nil }
                 return CountdownTypesetter.compactRunWidth(
                     for: UsagePresentation.countdownLayout(until: window.resetsAt, now: now),
                     font: font
@@ -544,7 +563,7 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
             .max() ?? 0
         for (index, row) in rows.enumerated() {
             if index < windows.count {
-                render(window: windows[index], name: row.name, bar: row.bar, percent: row.percent, status: row.status, stale: stale, runWidth: runWidth)
+                render(window: windows[index], name: row.name, bar: row.bar, percent: row.percent, status: row.status, stale: stale, refreshing: refreshing, runWidth: runWidth)
             } else {
                 renderPlanRow(planType: snapshot.planType, name: row.name, bar: row.bar, percent: row.percent, status: row.status)
             }
@@ -598,7 +617,7 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func render(window: RateLimitWindow, name: NSTextField, bar: UsageBarView, percent: NSTextField, status: NSTextField, stale: Bool, runWidth: CGFloat) {
+    private func render(window: RateLimitWindow, name: NSTextField, bar: UsageBarView, percent: NSTextField, status: NSTextField, stale: Bool, refreshing: Bool, runWidth: CGFloat) {
         let key = window.windowDurationMinutes
         name.stringValue = UsagePresentation.windowName(minutes: key)
         let color: NSColor = stale ? .secondaryLabelColor : usageColor(for: window.usedPercent)
@@ -606,13 +625,19 @@ final class HUDPanelController: NSObject, NSWindowDelegate {
         percent.stringValue = "\(Int(window.usedPercent.rounded()))%"
         percent.textColor = stale ? .secondaryLabelColor : color
         status.textColor = stale ? .secondaryLabelColor : .secondaryLabelColor
-        if stale {
-            status.stringValue = "数据滞后"
+        if refreshing {
+            // Ahead of the stale wording: a click the user just made says more
+            // about what the panel is doing than how old the numbers are.
+            status.stringValue = UsagePresentation.refreshingText
+        } else if stale {
+            // Names what the client last reported, so a dead connection cannot
+            // hide behind wording that reads like a slow one.
+            status.stringValue = UsagePresentation.staleStatusText(for: lastStatus)
         } else if window.resetsAt <= Date() {
             status.stringValue = "正在重置…"
             if expirationRefreshSent[key] != window.resetsAt {
                 expirationRefreshSent[key] = window.resetsAt
-                onNeedsRefresh?()
+                onNeedsRefresh?(false)
             }
         } else {
             status.attributedStringValue = CountdownTypesetter.attributedString(

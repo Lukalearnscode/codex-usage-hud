@@ -16,7 +16,8 @@ enum RateLimitCoreTests {
         testRejectsUnreachableSavedPositions()
         testEmptyStateWordingDoesNotAssertSignedOut()
         testCountdownRowsEndTogetherWithNoInnerGaps()
-        print("CodexUsageHUDCoreTests: 10 passed")
+        testStaleWordingNamesTheReasonAndFitsTheColumn()
+        print("CodexUsageHUDCoreTests: 11 passed")
     }
 
     private static let fetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
@@ -157,6 +158,37 @@ enum RateLimitCoreTests {
         check(UsagePresentation.emptyStateLines(for: .connecting) == ("正在连接…", ""), "connecting wording")
         check(UsagePresentation.emptyStateLines(for: .unavailable) == ("无法读取额度", "正在重试…"), "unavailable wording")
         check(UsagePresentation.emptyStateLines(for: .available) == ("等待数据…", ""), "waiting wording")
+    }
+
+    private static func testStaleWordingNamesTheReasonAndFitsTheColumn() {
+        // 数据滞后 states that the numbers are old, which is true of a slow
+        // answer and misleading for a connection that stopped answering. On
+        // 2026-09-18 an app-server held its pipe open for eight hours with no
+        // network connection at all and the panel said only this. The four
+        // statuses must not collapse into one sentence.
+        let texts: [String] = [.init(UsagePresentation.staleStatusText(for: .available)),
+                               .init(UsagePresentation.staleStatusText(for: .connecting)),
+                               .init(UsagePresentation.staleStatusText(for: .notAuthenticated)),
+                               .init(UsagePresentation.staleStatusText(for: .unavailable))]
+        check(Set(texts).count == 4, "each status gets its own wording, got \(texts)")
+        check(UsagePresentation.staleStatusText(for: .available) == "数据滞后",
+              "a connection that is merely slow still says the numbers are old")
+
+        // Same rule testEmptyStateWordingDoesNotAssertSignedOut enforces: an
+        // absent bucket can equally be a renamed field, so the wording
+        // suggests the login instead of declaring it dead.
+        let signedOut = UsagePresentation.staleStatusText(for: .notAuthenticated)
+        check(!signedOut.contains("失效") && !signedOut.contains("过期"),
+              "stale wording must not assert the login died, got \(signedOut)")
+
+        // The status column is 90pt and clips. Measure it rather than counting
+        // characters: the 12pt-per-CJK-character rule is a rule of thumb and
+        // the ellipsis is not a CJK character.
+        let font = NSFont(name: "Songti SC", size: 12) ?? NSFont.systemFont(ofSize: 12)
+        for text in texts + [UsagePresentation.refreshingText] {
+            let width = (text as NSString).size(withAttributes: [.font: font]).width
+            check(width <= 90, "\(text) measures \(width)pt, past the 90pt status column")
+        }
     }
 
     private static func testCountdownRowsEndTogetherWithNoInnerGaps() {

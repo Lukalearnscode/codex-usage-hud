@@ -28,6 +28,21 @@ final class AppServerClient: @unchecked Sendable {
     private var inputBuffer = Data()
     private var stopped = false
     private var readTimeoutWorkItem: DispatchWorkItem?
+    private var lastSnapshotAt: Date?
+    private var connectedAt: Date?
+    // The failure the read timeout does not catch: an app-server that answers
+    // promptly and uselessly. On 2026-09-18 this one kept its pipe open for
+    // eight hours and forty minutes with no network connection of its own
+    // (lsof showed none), answering every rate-limit read with an error, so
+    // no request ever went unanswered and nothing rebuilt the connection. The
+    // panel showed 数据滞后 the whole time and the log held not one line,
+    // because the error branch below used to return in silence. Rebuild
+    // whenever no usable snapshot has landed for this long, whatever the
+    // replies looked like.
+    // Overridable so the rebuild can be exercised in seconds rather than by
+    // waiting out the real three minutes.
+    private let staleRebuildThreshold: TimeInterval = ProcessInfo.processInfo
+        .environment["CODEX_HUD_STALE_REBUILD"].flatMap(TimeInterval.init) ?? 180
     // A rate-limit request that is never answered leaves readInFlight set, and
     // every later refresh then collapses into refreshPending and returns. The
     // process stays alive, so terminationHandler never fires and the HUD keeps
@@ -54,13 +69,29 @@ final class AppServerClient: @unchecked Sendable {
         closeProcess(terminate: true, waitForExit: true)
     }
 
-    func refresh() {
+    /// - Parameter force: a refresh the user asked for, which jumps the queue
+    ///   instead of waiting behind a request already in flight.
+    func refresh(force: Bool = false) {
         guard !stopped else { return }
-        if initialized, let process, process.isRunning {
-            requestRateLimits()
-        } else {
+        guard initialized, let process, process.isRunning else {
             connect()
+            return
         }
+        if hasGoneQuiet() {
+            let silence = Int(Date().timeIntervalSince(lastSnapshotAt ?? connectedAt ?? Date()))
+            logger.error("No usable snapshot for \(silence, privacy: .public)s; rebuilding the app-server connection")
+            connect()
+            return
+        }
+        requestRateLimits(force: force)
+    }
+
+    /// True once the connection has gone this long without producing a
+    /// snapshot. `connect` resets the reference, so a rebuild cannot repeat
+    /// faster than the threshold even while every reply keeps failing.
+    private func hasGoneQuiet() -> Bool {
+        guard let reference = lastSnapshotAt ?? connectedAt else { return false }
+        return Date().timeIntervalSince(reference) > staleRebuildThreshold
     }
 
     private func connect() {
@@ -73,6 +104,7 @@ final class AppServerClient: @unchecked Sendable {
         refreshPending = false
         cancelReadTimeout()
         inputBuffer.removeAll(keepingCapacity: true)
+        connectedAt = Date()
         notify(.connecting)
 
         guard FileManager.default.isExecutableFile(atPath: executablePath) else {
@@ -134,11 +166,22 @@ final class AppServerClient: @unchecked Sendable {
         ])
     }
 
-    private func requestRateLimits() {
+    private func requestRateLimits(force: Bool = false) {
         guard initialized else { return }
         if readInFlight {
-            refreshPending = true
-            return
+            guard force else {
+                refreshPending = true
+                return
+            }
+            // A request the user asked for does not queue behind one already
+            // out: the panel would stay unchanged for up to two round trips
+            // and the click would read as if it did nothing. Abandon the old
+            // reply (its id is dropped, so `handle` ignores it when it lands)
+            // and send a fresh request now.
+            rateLimitRequestIDs.removeAll()
+            cancelReadTimeout()
+            readInFlight = false
+            refreshPending = false
         }
         let requestID = allocateRequestID()
         rateLimitRequestIDs.insert(requestID)
@@ -229,8 +272,25 @@ final class AppServerClient: @unchecked Sendable {
         guard rateLimitRequestIDs.remove(requestID) != nil else { return }
         readInFlight = false
         cancelReadTimeout()
+        if let error = message["error"] as? [String: Any] {
+            // This branch used to return without a word in the log, and that
+            // is how an app-server answering every read with an error went
+            // unnoticed for eight hours (2026-09-18). The error's own message
+            // can name the account, so log the code and the classification,
+            // not the text.
+            let authentication = isAuthenticationError(message)
+            let code = (error["code"] as? NSNumber)?.intValue
+            logger.error("""
+                Rate-limit request failed (code \(code.map(String.init) ?? "none", privacy: .public), \
+                authentication: \(authentication, privacy: .public))
+                """)
+            notify(authentication ? .notAuthenticated : .unavailable)
+            requestPendingRefreshIfNeeded()
+            return
+        }
         if message["error"] != nil {
-            notify(isAuthenticationError(message) ? .notAuthenticated : .unavailable)
+            logger.error("Rate-limit request failed with an unreadable error payload")
+            notify(.unavailable)
             requestPendingRefreshIfNeeded()
             return
         }
@@ -242,6 +302,7 @@ final class AppServerClient: @unchecked Sendable {
         switch RateLimitParser.parse(data) {
         case let .snapshot(snapshot):
             reconnectAttempt = 0
+            lastSnapshotAt = Date()
             onSnapshot?(snapshot)
             notify(.available)
         case .notAuthenticated:

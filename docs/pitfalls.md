@@ -32,6 +32,41 @@ This project can point at one, with `CODEX_HUD_APP_SERVER_PATH` and
 | Replies normally | 3s | 1 — no false alarms |
 | Swallows the request | 9999s | 1 — frozen, this is the bug |
 
+## A request answered instantly, and uselessly, freezes everything just as well
+
+**Symptom.** The same one as above: numbers stop updating, panel says the data
+is stale, nothing in the log. The difference is that the timeout you added for
+the previous pitfall never fires, because every request *is* answered.
+
+**Cause.** The child process was alive and its pipe was open, but it had no
+network connection of its own — `lsof` on it showed zero TCP sockets — and it
+answered every read with an error in milliseconds. So: no unanswered request,
+therefore no timeout, therefore no reconnect. And the branch that handles an
+error reply returned without logging anything, so there was no record either.
+This ran for eight hours and forty minutes before anyone looked.
+
+**Fix.** Three things, and all three are needed:
+
+1. Log the error branch. Log the code and your classification of it, not the
+   error's message — that text can carry account detail.
+2. Time out on *outcome*, not just on silence. Track when a usable snapshot
+   last arrived and rebuild the connection when that goes stale, whatever the
+   replies look like. A connection that answers and never produces a result is
+   not healthier than one that says nothing.
+3. Do not let a cached value hide the status. The renderer here drew whatever
+   snapshot it had and only consulted the connection status when it had none,
+   so a dead connection wore the same wording as a slow one.
+
+**How to reproduce.** A stub that answers `initialize` normally and returns
+`{"error": ...}` for every rate-limit read. With `CODEX_HUD_STALE_REBUILD=20`
+the rebuild shows up within a minute.
+
+**Worth knowing.** While diagnosing this, rising CPU time on the child process
+looked like proof it was working — a steady 1 second per hour, about what a
+poll every minute costs. It was an internal heartbeat; the network had been
+gone for hours. `lsof -nP -p <pid> | grep TCP` answers the question that CPU
+time only seems to.
+
 ## The app runs but nothing happens
 
 **Symptom.** `ps` shows the process. No panel, no child process, no activity of

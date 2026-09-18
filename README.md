@@ -72,9 +72,11 @@ keeps running — a process that has exited cannot notice that Codex just opened
 → [Building the HUD](docs/building-the-hud.md)
 
 **What went wrong along the way.** A request that never gets answered can
-freeze the whole thing silently. Window coordinates flip direction between the
-two macOS APIs involved. A saved panel position can strand itself on a monitor
-you unplugged. Nine of these, with how to reproduce each one.
+freeze the whole thing silently — and so can one that is answered instantly
+with an error, which is worse, because the timeout you added for the first case
+never fires. Window coordinates flip direction between the two macOS APIs
+involved. A saved panel position can strand itself on a monitor you unplugged.
+Fifteen of these, with how to reproduce each one.
 → [Pitfalls](docs/pitfalls.md)
 
 ## Before you rely on this
@@ -97,7 +99,7 @@ will block it.
 ## Tests
 
 ```bash
-swift run -c debug CodexUsageHUDCoreTests    # 9 assertions
+swift run -c debug CodexUsageHUDCoreTests    # 11 assertions
 ```
 
 `swift test` also exists, but on a Command Line Tools toolchain it compiles the

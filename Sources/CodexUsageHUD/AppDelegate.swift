@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         client.onStatus = { [weak controller] status in
             controller?.setStatus(status)
         }
-        controller.onNeedsRefresh = { [weak client] in client?.refresh() }
+        controller.onNeedsRefresh = { [weak client] force in client?.refresh(force: force) }
 
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
@@ -62,7 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         })
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        // 20s rather than the 60s this shipped with: a round trip costs 2 to 5
+        // seconds and reads no quota of its own, and the panel's numbers were
+        // up to a minute behind for no reason anyone could see. It also gives
+        // the client's own 180s stale-rebuild check three chances to notice a
+        // connection that has stopped producing snapshots.
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             self?.client.refresh()
         }
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in

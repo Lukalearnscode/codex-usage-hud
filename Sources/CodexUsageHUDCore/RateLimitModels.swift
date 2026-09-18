@@ -128,6 +128,33 @@ public enum UsagePresentation {
         }
     }
 
+    /// Wording for the status column once a snapshot has gone stale.
+    ///
+    /// The column used to read 数据滞后 whatever the reason, which is wording
+    /// for a slow answer, and it hid a connection that had stopped answering
+    /// at all: on 2026-09-18 the app-server held its pipe open for eight
+    /// hours with no network connection of its own, and the panel said
+    /// nothing but 数据滞后 the whole time. Name what the client last
+    /// reported instead.
+    ///
+    /// `.notAuthenticated` only means the reply carried no rate-limit bucket,
+    /// and a renamed field does that too, so it suggests the login the way
+    /// `emptyStateLines` does rather than asserting it. Seven CJK characters
+    /// at 12pt is what the 90pt column holds.
+    public static func staleStatusText(for status: AppServerClientStatus) -> String {
+        switch status {
+        case .available: return "数据滞后"
+        case .connecting: return "正在重连…"
+        case .notAuthenticated: return "请确认登录"
+        case .unavailable: return "连接异常"
+        }
+    }
+
+    /// Shown in the status column while a refresh the user asked for is out.
+    /// Without it the panel sits unchanged for the two-to-five seconds the
+    /// round trip takes and the click reads as if it did nothing.
+    public static let refreshingText = "刷新中…"
+
     public static func progressBar(for usedPercent: Double) -> String {
         let filled = Int((RateLimitParser.clamp(usedPercent) / 100.0 * 8.0).rounded())
         let count = Swift.min(Swift.max(filled, 0), 8)
